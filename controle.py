@@ -5,27 +5,24 @@ from datetime import datetime
 import os
 import io
 import numpy as np
+import shutil
 
 ARQUIVO_DADOS = 'dados_quebras.csv'
 ARQUIVO_PRECOS = 'precos.csv'
 
-st.set_page_config(page_title="Controle de Quebras", layout="wide")
-st.title("📉 Controle de Quebras de Salgados")
-
-menu = st.sidebar.selectbox("Menu", ["Registrar Quebra", "Relatório", "Análise", "Importar Planilha", "Preços"])
-
-# Carrega dados principais
-if os.path.exists(ARQUIVO_DADOS):
-    df = pd.read_csv(ARQUIVO_DADOS, parse_dates=['Data'])
-    # Tratar NaN na coluna 'Filial'
-    df['Filial'] = df['Filial'].fillna('Desconhecida')
-    # Garantir que a coluna 'Data' está no formato datetime
-    df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
-else:
-    df = pd.DataFrame(columns=[
-        'Data', 'Produto', 'Vendidos', 'Quebra', '% Quebra',
-        'Filial', 'Lucro Bruto'
-    ])
+# Inicializar o estado da sessão
+if 'df' not in st.session_state:
+    try:
+        st.session_state.df = pd.read_csv(ARQUIVO_DADOS, dtype={'Filial': str})
+        st.session_state.df['Data'] = pd.to_datetime(st.session_state.df['Data'], errors='coerce')
+        
+        # Verificar datas inválidas
+        if st.session_state.df['Data'].isna().any():
+            st.error("Existem datas inválidas no arquivo CSV. Corrija antes de continuar.")
+            st.stop()
+    except FileNotFoundError:
+        st.error(f"Arquivo {ARQUIVO_DADOS} não encontrado.")
+        st.stop()
 
 # Carrega dados de preços
 if os.path.exists(ARQUIVO_PRECOS):
@@ -34,6 +31,14 @@ if os.path.exists(ARQUIVO_PRECOS):
     df_precos['Produto'] = df_precos['Produto'].fillna('Desconhecido')
 else:
     df_precos = pd.DataFrame(columns=['COD VIP', 'Produto', 'Custo Unitário', 'Preço Venda Unitário'])
+
+st.set_page_config(page_title="Controle de Quebras", layout="wide")
+st.title("📉 Controle de Quebras de Salgados")
+
+menu = st.sidebar.selectbox("Menu", ["Registrar Quebra", "Relatório", "Análise", "Importar Planilha", "Preços"])
+
+# Atualizar o DataFrame global
+df = st.session_state.df
 
 if menu == "Registrar Quebra":
     st.header("➕ Registrar, Editar ou Excluir Quebra")
@@ -115,50 +120,139 @@ if menu == "Registrar Quebra":
             submit = st.form_submit_button("Salvar Alterações")
 
             if submit:
-                if not produto_novo:
-                    st.error("O campo Produto é obrigatório.")
-                elif not filial_nova:
-                    st.error("O campo Filial é obrigatório.")
-                else:
-                    total = vendidos + quebra
-                    perc_quebra = (quebra / total) * 100 if total > 0 else 0
-
-                    # Calcular Lucro Bruto
-                    preco_info = df_precos[df_precos['Produto'] == produto_novo]
-                    if not preco_info.empty:
-                        custo_unit = preco_info['Custo Unitário'].iloc[0]
-                        preco_venda = preco_info['Preço Venda Unitário'].iloc[0]
-                        lucro_bruto = (preco_venda * vendidos) - (custo_unit * (vendidos + quebra))
+                try:
+                    if not produto_novo:
+                        st.error("O campo Produto é obrigatório.")
+                    elif not filial_nova:
+                        st.error("O campo Filial é obrigatório.")
                     else:
-                        st.warning(f"Produto {produto_novo} sem preço cadastrado. Lucro Bruto será None.")
-                        lucro_bruto = None
+                        total = vendidos + quebra
+                        perc_quebra = (quebra / total) * 100 if total > 0 else 0
 
-                    df.loc[idx, :] = {
-                        'Data': data,
-                        'Produto': produto_novo,
-                        'Vendidos': vendidos,
-                        'Quebra': quebra,
-                        '% Quebra': round(perc_quebra, 2),
-                        'Filial': filial_nova,
-                        'Lucro Bruto': lucro_bruto
-                    }
+                        # Calcular Lucro Bruto
+                        preco_info = df_precos[df_precos['Produto'] == produto_novo]
+                        if not preco_info.empty:
+                            custo_unit = preco_info['Custo Unitário'].iloc[0]
+                            preco_venda = preco_info['Preço Venda Unitário'].iloc[0]
+                            lucro_bruto = (preco_venda * vendidos) - (custo_unit * (vendidos + quebra))
+                        else:
+                            st.warning(f"Produto {produto_novo} sem preço cadastrado. Lucro Bruto será None.")
+                            lucro_bruto = None
 
-                    df.to_csv(ARQUIVO_DADOS, index=False)
-                    st.success("Registro atualizado com sucesso!")
+                        df.loc[idx, :] = {
+                            'Data': data,
+                            'Produto': produto_novo,
+                            'Vendidos': vendidos,
+                            'Quebra': quebra,
+                            '% Quebra': round(perc_quebra, 2),
+                            'Filial': filial_nova,
+                            'Lucro Bruto': lucro_bruto
+                        }
+
+                        df.to_csv(ARQUIVO_DADOS, index=False)
+                        st.session_state.df = df
+                        st.success("Registro atualizado com sucesso!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao atualizar registro: {str(e)}")
 
     elif modo == "Excluir Registro" and not df.empty:
-        df_sorted = df.sort_values(by="Data", ascending=False)
-        df_sorted['Resumo'] = df_sorted.apply(lambda x: f"{x['Data'].date()} | {x['Produto']} | {x['Filial']}", axis=1)
-        selecao = st.selectbox("Selecione um registro para excluir", df_sorted['Resumo'])
-
-        idx = df_sorted[df_sorted['Resumo'] == selecao].index[0]
-        st.write("Registro selecionado:")
-        st.dataframe(df.loc[[idx]])
-
-        if st.button("Confirmar Exclusão"):
-            df = df.drop(idx).reset_index(drop=True)
-            df.to_csv(ARQUIVO_DADOS, index=False)
-            st.success("Registro excluído com sucesso!")
+        st.header("🗑️ Excluir Registros")
+        
+        # Opções de exclusão
+        tipo_exclusao = st.radio("Selecione o tipo de exclusão:", 
+                                ["Excluir Registro Individual", "Excluir por Período e Filial"])
+        
+        if tipo_exclusao == "Excluir Registro Individual":
+            # Ordenar registros por data (mais recentes primeiro)
+            df_sorted = df.sort_values(by="Data", ascending=False)
+            
+            # Criar resumo para exibição
+            df_sorted['Resumo'] = df_sorted.apply(
+                lambda x: f"{x['Data'].date()} | {x['Produto']} | {x['Filial']} | {x['Vendidos']} vendidos | {x['Quebra']} quebras",
+                axis=1
+            )
+            
+            # Selecionar registro
+            selecao = st.selectbox("Selecione um registro para excluir:", df_sorted['Resumo'])
+            
+            # Encontrar índice do registro selecionado
+            idx = df_sorted[df_sorted['Resumo'] == selecao].index[0]
+            
+            # Exibir detalhes do registro
+            st.subheader("Detalhes do Registro Selecionado:")
+            st.dataframe(df.loc[[idx]])
+            
+            # Botão de confirmação
+            if st.button("Confirmar Exclusão do Registro"):
+                try:
+                    # Criar backup
+                    shutil.copy(ARQUIVO_DADOS, ARQUIVO_DADOS + ".backup")
+                    
+                    # Excluir registro
+                    df_novo = df.drop(idx).reset_index(drop=True)
+                    
+                    # Salvar alterações
+                    df_novo.to_csv(ARQUIVO_DADOS, index=False)
+                    
+                    # Atualizar o DataFrame na sessão
+                    st.session_state.df = df_novo
+                    
+                    st.success("Registro excluído com sucesso!")
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Erro ao excluir registro: {e}")
+        
+        else:  # Excluir por Período e Filial
+            st.subheader("Excluir Registros por Período e Filial")
+            
+            # Seleção de período
+            col1, col2 = st.columns(2)
+            with col1:
+                data_inicio = st.date_input("Data Inicial", value=df['Data'].min())
+            with col2:
+                data_fim = st.date_input("Data Final", value=df['Data'].max())
+            
+            # Seleção de filiais
+            filiais = st.multiselect(
+                "Selecione as Filiais:",
+                options=df['Filial'].unique(),
+                default=df['Filial'].unique()
+            )
+            
+            # Converter datas para datetime
+            inicio = pd.to_datetime(data_inicio)
+            fim = pd.to_datetime(data_fim)
+            
+            # Criar máscara de filtro
+            mask = (df['Data'] >= inicio) & (df['Data'] <= fim) & (df['Filial'].isin(filiais))
+            registros_filtrados = df[mask]
+            
+            if not registros_filtrados.empty:
+                st.subheader("Registros Encontrados:")
+                st.write(f"Total de registros: {len(registros_filtrados)}")
+                st.dataframe(registros_filtrados)
+                
+                # Botão de confirmação
+                if st.button("Confirmar Exclusão dos Registros"):
+                    try:
+                        # Excluir registros
+                        df_novo = df[~mask].copy()
+                        
+                        # Salvar alterações
+                        df_novo.to_csv(ARQUIVO_DADOS, index=False)
+                        
+                        # Atualizar o DataFrame na sessão
+                        st.session_state.df = df_novo
+                        
+                        st.success(f"{len(registros_filtrados)} registros excluídos com sucesso!")
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Erro ao excluir registros: {str(e)}")
+            else:
+                st.warning("Nenhum registro encontrado para os critérios selecionados.")
 
 elif menu == "Relatório":
     st.header("📊 Relatório de Quebras")
@@ -220,10 +314,14 @@ elif menu == "Análise":
     if not df.empty:
         df['Data'] = pd.to_datetime(df['Data'])
 
-        # Filtros
-        filial = st.multiselect("Filial", df['Filial'].unique(), default=list(df['Filial'].unique()))
-        produtos = st.multiselect("Produto", df['Produto'].unique(), default=list(df['Produto'].unique()))
-        ano = st.selectbox("Ano", sorted(df['Data'].dt.year.unique()), index=len(sorted(df['Data'].dt.year.unique()))-1)
+        # Filtros em uma única linha
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            filial = st.multiselect("Filial", df['Filial'].unique(), default=list(df['Filial'].unique()))
+        with col2:
+            produtos = st.multiselect("Produto", df['Produto'].unique(), default=list(df['Produto'].unique()))
+        with col3:
+            ano = st.selectbox("Ano", sorted(df['Data'].dt.year.unique()), index=len(sorted(df['Data'].dt.year.unique()))-1)
 
         df_filt = df[
             (df['Filial'].isin(filial)) &
@@ -232,108 +330,102 @@ elif menu == "Análise":
         ].copy()
 
         if not df_filt.empty:
-            # Calcular % Quebra correta
-            df_filt['% Quebra Calc'] = df_filt.apply(
-                lambda row: (row['Quebra'] / row['Vendidos']) * 100 if row['Vendidos'] != 0 else 0, axis=1
-            )
-
             # Preparar dados
             df_filt['Mês'] = df_filt['Data'].dt.month
             meses = {1: 'jan', 2: 'fev', 3: 'mar', 4: 'abr', 5: 'mai', 6: 'jun',
                      7: 'jul', 8: 'ago', 9: 'set', 10: 'out', 11: 'nov', 12: 'dez'}
 
-            # Pivôs
-            pivot_quebra_pond = df_filt.pivot_table(
+            # Criar DataFrames separados para cada métrica
+            quebras_df = df_filt.pivot_table(
                 values='Quebra',
                 index='Filial',
                 columns='Mês',
                 aggfunc='sum'
             ).fillna(0).astype(int)
-            pivot_venda_pond = df_filt.pivot_table(
+
+            vendas_df = df_filt.pivot_table(
                 values='Vendidos',
                 index='Filial',
                 columns='Mês',
                 aggfunc='sum'
             ).fillna(0).astype(int)
-            pivot_margem = df_filt.pivot_table(
+
+            # Corrigindo o cálculo da porcentagem
+            perc_quebra_df = (quebras_df / vendas_df * 100).fillna(0).round(1)
+
+            margem_df = df_filt.pivot_table(
                 values='Lucro Bruto',
                 index='Filial',
                 columns='Mês',
                 aggfunc='sum'
             ).fillna(0).round(2)
 
-            # Calcular % Quebra Ponderada
-            pivot_percentual = (pivot_quebra_pond / pivot_venda_pond.replace(0, np.nan)) * 100
-            pivot_percentual = pivot_percentual.fillna(0).round(0).astype(int)
+            # Renomear colunas com nomes dos meses
+            for df_temp in [quebras_df, vendas_df, perc_quebra_df, margem_df]:
+                df_temp.columns = [meses[m] for m in df_temp.columns]
 
-            # Renomear colunas dos meses
-            pivot_quebra_pond.columns = [meses[m] for m in pivot_quebra_pond.columns]
-            pivot_venda_pond.columns = [meses[m] for m in pivot_venda_pond.columns]
-            pivot_margem.columns = [meses[m] for m in pivot_margem.columns]
-            pivot_percentual.columns = [meses[m] for m in pivot_percentual.columns]
+            # Criar abas para diferentes visualizações
+            tab1, tab2, tab3 = st.tabs(["Quebras e Vendas", "% Quebra", "Margem Bruta"])
 
-            # Totais do grupo
-            total_quebra_pond = pivot_quebra_pond.sum()
-            total_venda_pond = pivot_venda_pond.sum()
-            total_margem = pivot_margem.sum()
-            total_percentual = (total_quebra_pond / total_venda_pond.replace(0, np.nan) * 100).fillna(0).round(0).astype(int)
+            with tab1:
+                # Quebras
+                st.subheader("Quebras")
+                st.dataframe(
+                    quebras_df.style.format("{:,.0f}")
+                        .applymap(lambda x: f'background-color: {"#ffcccc" if x > 0 else "white"}; color: black'),
+                    use_container_width=True
+                )
 
-            # DataFrame consolidado
-            consolidated_data = []
-            for filial in pivot_quebra_pond.index:
-                row = {'Filial': filial}
-                for mes in meses.values():
-                    row[f'% Quebra ({mes})'] = pivot_percentual.loc[filial, mes] if mes in pivot_percentual.columns else 0
-                    row[f'Pond. Quebra ({mes})'] = pivot_quebra_pond.loc[filial, mes] if mes in pivot_quebra_pond.columns else 0
-                    row[f'Pond. Venda ({mes})'] = pivot_venda_pond.loc[filial, mes] if mes in pivot_venda_pond.columns else 0
-                    row[f'Margem Bruta ({mes})'] = pivot_margem.loc[filial, mes] if mes in pivot_margem.columns else 0
-                consolidated_data.append(row)
+                # Vendas
+                st.subheader("Vendas")
+                st.dataframe(
+                    vendas_df.style.format("{:,.0f}")
+                        .applymap(lambda x: f'background-color: {"#cce5ff" if x > 0 else "white"}; color: black'),
+                    use_container_width=True
+                )
 
-            # Linha de totais
-            grupo_row = {'Filial': 'Grupo'}
-            for mes in meses.values():
-                grupo_row[f'% Quebra ({mes})'] = total_percentual[mes] if mes in total_percentual.index else 0
-                grupo_row[f'Pond. Quebra ({mes})'] = total_quebra_pond[mes] if mes in total_quebra_pond.index else 0
-                grupo_row[f'Pond. Venda ({mes})'] = total_venda_pond[mes] if mes in total_venda_pond.index else 0
-                grupo_row[f'Margem Bruta ({mes})'] = total_margem[mes] if mes in total_margem.index else 0
-            consolidated_data.append(grupo_row)
+            with tab2:
+                # % Quebra
+                st.subheader("% Quebra sobre Venda")
+                st.dataframe(
+                    perc_quebra_df.style.format("{:.1f}%")
+                        .applymap(lambda x: f'background-color: {"#ffcccc" if x > 8 else "#ccffcc"}; color: {"red" if x > 8 else "darkgreen"}'),
+                    use_container_width=True
+                )
 
-            df_consolidated = pd.DataFrame(consolidated_data)
+            with tab3:
+                # Margem Bruta
+                st.subheader("Margem Bruta")
+                st.dataframe(
+                    margem_df.style.format("R$ {:,.2f}")
+                        .applymap(lambda x: f'background-color: {"#ccffcc" if x > 0 else "#ffcccc"}; color: {"darkgreen" if x > 0 else "red"}'),
+                    use_container_width=True
+                )
 
-            # Formatar os dados
-            def formatar_df(df):
-                df_formatado = df.copy()
-                for col in df.columns:
-                    if '% Quebra' in col:
-                        df_formatado[col] = df[col].apply(lambda x: f"{x:.0f}%")
-                    elif 'Margem Bruta' in col:
-                        df_formatado[col] = df[col].apply(lambda x: f"R$ {x:,.2f}".replace('.', 'X').replace(',', '.').replace('X', ','))
-                    elif 'Pond. Quebra' in col or 'Pond. Venda' in col:
-                        df_formatado[col] = df[col].astype(int)
-                return df_formatado
-
-            df_formatado = formatar_df(df_consolidated)
-
-            # Estilizar % Quebra
-            styled_df = df_formatado.style.applymap(
-                lambda val: 'background-color: red' if isinstance(val, str) and '%' in val and int(val.replace('%', '')) > 81 else 'background-color: green',
-                subset=[col for col in df_formatado.columns if '% Quebra' in col]
-            )
-
-            st.dataframe(styled_df, use_container_width=True)
-
-            # Exibir totais
-            st.subheader("Totais do Grupo")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Ponderado Quebra", total_quebra_pond.sum())
-            col2.metric("Total Ponderado Venda", total_venda_pond.sum())
-            col3.metric("Total Margem Bruta", f"R$ {total_margem.sum():,.2f}".replace('.', 'X').replace(',', '.').replace('X', ','))
+            # Totais
+            st.subheader("Totais do Período")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                total_quebras = quebras_df.sum().sum()
+                st.metric("Total Quebras", f"{total_quebras:,.0f}")
+            
+            with col2:
+                total_vendas = vendas_df.sum().sum()
+                st.metric("Total Vendas", f"{total_vendas:,.0f}")
+            
+            with col3:
+                perc_total = (total_quebras / total_vendas * 100)
+                st.metric("% Quebra Média", f"{perc_total:.1f}%")
+            
+            with col4:
+                total_margem = margem_df.sum().sum()
+                st.metric("Margem Bruta Total", f"R$ {total_margem:,.2f}")
 
         else:
             st.warning("Nenhum dado disponível para o filtro selecionado.")
     else:
         st.warning("Nenhum dado disponível para análise.")
-
 
 elif menu == "Importar Planilha":
     st.header("📥 Importar Planilha de Quebras")
@@ -351,15 +443,9 @@ elif menu == "Importar Planilha":
             st.error("Por favor, selecione uma planilha para importar.")
         else:
             try:
-                # Log: Exibir o estado inicial do DataFrame df
-                st.write(f"Total de registros antes da importação: {len(df)}")
-                st.dataframe(df)
-
                 # Ler a planilha
                 df_planilha = pd.read_excel(arquivo)
                 df_planilha.columns = df_planilha.columns.str.strip()
-                st.write(f"Total de linhas na planilha importada: {len(df_planilha)}")
-                st.dataframe(df_planilha)
 
                 if "DESCRIÇÃO" not in df_planilha.columns:
                     st.error("A planilha deve conter a coluna 'DESCRIÇÃO'.")
@@ -381,8 +467,6 @@ elif menu == "Importar Planilha":
                         "Quebra": "sum",
                         "Vendidos": "sum"
                     })
-                    st.write(f"Total de linhas após agrupamento: {len(df_filtrado)}")
-                    st.dataframe(df_filtrado)
 
                     # Calcular % Quebra
                     df_filtrado['% Quebra'] = (df_filtrado['Quebra'] / (df_filtrado['Vendidos'] + df_filtrado['Quebra'])) * 100
@@ -391,45 +475,37 @@ elif menu == "Importar Planilha":
                     df_filtrado['Filial'] = filial
 
                     # Mesclar com preços
-                    st.write("Conteúdo do df_precos:")
-                    st.dataframe(df_precos)
                     df_merge = pd.merge(df_filtrado, df_precos, on=['COD VIP', 'Produto'], how='left')
-                    st.write(f"Total de linhas após mesclagem com preços: {len(df_merge)}")
-                    st.dataframe(df_merge)
 
                     # Identificar produtos sem preço
                     produtos_sem_preco = df_merge[df_merge['Preço Venda Unitário'].isna()]['Produto'].unique()
                     if len(produtos_sem_preco) > 0:
                         st.warning(f"Os seguintes produtos estão sem preço cadastrado e não foram importados: {', '.join(produtos_sem_preco)}")
                         df_merge = df_merge[~df_merge['Produto'].isin(produtos_sem_preco)]
-                        st.write(f"Total de linhas após remover produtos sem preço: {len(df_merge)}")
-                        st.dataframe(df_merge)
 
                     if not df_merge.empty:
                         # Calcular Lucro Bruto
                         df_merge['Lucro Bruto'] = (df_merge['Preço Venda Unitário'] * df_merge['Vendidos']) - (df_merge['Custo Unitário'] * (df_merge['Vendidos'] + df_merge['Quebra']))
                         colunas_df = ['Data', 'Produto', 'Vendidos', 'Quebra', '% Quebra', 'Filial', 'Lucro Bruto']
                         df_novo = df_merge[colunas_df]
-                        st.write(f"Total de linhas a serem adicionadas: {len(df_novo)}")
-                        st.dataframe(df_novo)
 
                         # Adicionar ao DataFrame principal
                         df = pd.concat([df, df_novo], ignore_index=True)
-                        st.write(f"Total de registros após adicionar novos dados: {len(df)}")
-                        st.dataframe(df)
 
                         # Salvar no arquivo
                         df.to_csv(ARQUIVO_DADOS, index=False)
+                        st.session_state.df = df
                         st.success(f"Importação realizada com sucesso! {len(df_novo)} registros adicionados.")
+                        st.rerun()
                     else:
                         st.warning("Nenhum dado foi importado pois todos os produtos estavam sem preço.")
             except Exception as e:
-                st.error(f"Erro ao importar: {e}")
+                st.error(f"Erro ao importar: {str(e)}")
 
 elif menu == "Preços":
     st.header("💰 Cadastro e Edição de Preços")
 
-    modo_preco = st.radio("Modo", ["Cadastrar Novo Preço", "Editar Preço Existente"])
+    modo_preco = st.radio("Modo", ["Cadastrar Novo Preço", "Editar Preço Existente", "Excluir Preço"])
 
     if modo_preco == "Cadastrar Novo Preço":
         with st.form("form_precos"):
@@ -453,6 +529,7 @@ elif menu == "Preços":
                     df_precos = pd.concat([df_precos, novo_preco], ignore_index=True)
                     df_precos.to_csv(ARQUIVO_PRECOS, index=False)
                     st.success("Preço salvo com sucesso!")
+                    st.rerun()
 
     elif modo_preco == "Editar Preço Existente" and not df_precos.empty:
         produto_selecionado = st.selectbox("Selecione o Produto", df_precos['Produto'])
@@ -478,6 +555,44 @@ elif menu == "Preços":
                     }
                     df_precos.to_csv(ARQUIVO_PRECOS, index=False)
                     st.success("Preço atualizado com sucesso!")
+                    st.rerun()
+
+    elif modo_preco == "Excluir Preço" and not df_precos.empty:
+        st.subheader("🗑️ Excluir Preço")
+        
+        # Selecionar produto para excluir
+        produto_selecionado = st.selectbox("Selecione o Produto para Excluir", df_precos['Produto'])
+        
+        if produto_selecionado:
+            # Mostrar informações do produto
+            preco_info = df_precos[df_precos['Produto'] == produto_selecionado].iloc[0]
+            
+            st.write("### Informações do Produto")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Código VIP:** {preco_info['COD VIP']}")
+                st.write(f"**Produto:** {preco_info['Produto']}")
+            with col2:
+                st.write(f"**Custo Unitário:** R$ {preco_info['Custo Unitário']:.2f}")
+                st.write(f"**Preço Venda:** R$ {preco_info['Preço Venda Unitário']:.2f}")
+            
+            # Botão de confirmação
+            if st.button("Confirmar Exclusão do Preço"):
+                try:
+                    # Remover o produto do DataFrame
+                    df_precos = df_precos[df_precos['Produto'] != produto_selecionado]
+                    
+                    # Salvar alterações
+                    df_precos.to_csv(ARQUIVO_PRECOS, index=False)
+                    
+                    st.success(f"Preço do produto '{produto_selecionado}' excluído com sucesso!")
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Erro ao excluir preço: {str(e)}")
 
     st.subheader("📋 Tabela de Preços Cadastrados")
-    st.dataframe(df_precos)
+    st.dataframe(df_precos.style.format({
+        'Custo Unitário': 'R$ {:.2f}',
+        'Preço Venda Unitário': 'R$ {:.2f}'
+    }), use_container_width=True)
