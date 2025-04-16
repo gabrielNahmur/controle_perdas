@@ -232,72 +232,67 @@ elif menu == "Análise":
         ].copy()
 
         if not df_filt.empty:
-            # Preparar dados para o dashboard
+            # Calcular % Quebra correta
+            df_filt['% Quebra Calc'] = df_filt.apply(
+                lambda row: (row['Quebra'] / row['Vendidos']) * 100 if row['Vendidos'] != 0 else 0, axis=1
+            )
+
+            # Preparar dados
             df_filt['Mês'] = df_filt['Data'].dt.month
             meses = {1: 'jan', 2: 'fev', 3: 'mar', 4: 'abr', 5: 'mai', 6: 'jun',
                      7: 'jul', 8: 'ago', 9: 'set', 10: 'out', 11: 'nov', 12: 'dez'}
 
-            # Pivot para % Quebra por filial e mês
-            pivot_quebra = df_filt.pivot_table(
-                values='% Quebra',
-                index='Filial',
-                columns='Mês',
-                aggfunc='mean'
-            ).fillna(0).round(2)
-            pivot_quebra.columns = [meses[m] for m in pivot_quebra.columns]
-
-            # Pivot para Quebra Ponderada (soma de quebras)
+            # Pivôs
             pivot_quebra_pond = df_filt.pivot_table(
                 values='Quebra',
                 index='Filial',
                 columns='Mês',
                 aggfunc='sum'
             ).fillna(0).astype(int)
-            pivot_quebra_pond.columns = [meses[m] for m in pivot_quebra_pond.columns]
-
-            # Pivot para Venda Ponderada (soma de vendidos)
             pivot_venda_pond = df_filt.pivot_table(
                 values='Vendidos',
                 index='Filial',
                 columns='Mês',
                 aggfunc='sum'
             ).fillna(0).astype(int)
-            pivot_venda_pond.columns = [meses[m] for m in pivot_venda_pond.columns]
-
-            # Pivot para Margem Bruta Após Quebra
             pivot_margem = df_filt.pivot_table(
                 values='Lucro Bruto',
                 index='Filial',
                 columns='Mês',
                 aggfunc='sum'
             ).fillna(0).round(2)
+
+            # Calcular % Quebra Ponderada
+            pivot_percentual = (pivot_quebra_pond / pivot_venda_pond.replace(0, np.nan)) * 100
+            pivot_percentual = pivot_percentual.fillna(0).round(0).astype(int)
+
+            # Renomear colunas dos meses
+            pivot_quebra_pond.columns = [meses[m] for m in pivot_quebra_pond.columns]
+            pivot_venda_pond.columns = [meses[m] for m in pivot_venda_pond.columns]
             pivot_margem.columns = [meses[m] for m in pivot_margem.columns]
+            pivot_percentual.columns = [meses[m] for m in pivot_percentual.columns]
 
             # Totais do grupo
             total_quebra_pond = pivot_quebra_pond.sum()
             total_venda_pond = pivot_venda_pond.sum()
             total_margem = pivot_margem.sum()
+            total_percentual = (total_quebra_pond / total_venda_pond.replace(0, np.nan) * 100).fillna(0).round(0).astype(int)
 
-            # Média de % Quebra por mês (para o grupo)
-            grupo_quebra = df_filt.groupby('Mês')['% Quebra'].mean().round(2)
-            grupo_quebra.index = [meses[m] for m in grupo_quebra.index]
-            grupo_quebra = grupo_quebra.reindex(list(meses.values()), fill_value=0)
-
-            # Criar DataFrame consolidado para exibição
+            # DataFrame consolidado
             consolidated_data = []
-            for filial in pivot_quebra.index:
+            for filial in pivot_quebra_pond.index:
                 row = {'Filial': filial}
                 for mes in meses.values():
-                    row[f'% Quebra ({mes})'] = pivot_quebra.loc[filial, mes] if mes in pivot_quebra.columns else 0
+                    row[f'% Quebra ({mes})'] = pivot_percentual.loc[filial, mes] if mes in pivot_percentual.columns else 0
                     row[f'Pond. Quebra ({mes})'] = pivot_quebra_pond.loc[filial, mes] if mes in pivot_quebra_pond.columns else 0
                     row[f'Pond. Venda ({mes})'] = pivot_venda_pond.loc[filial, mes] if mes in pivot_venda_pond.columns else 0
                     row[f'Margem Bruta ({mes})'] = pivot_margem.loc[filial, mes] if mes in pivot_margem.columns else 0
                 consolidated_data.append(row)
 
-            # Adicionar linha de totais (Grupo)
+            # Linha de totais
             grupo_row = {'Filial': 'Grupo'}
             for mes in meses.values():
-                grupo_row[f'% Quebra ({mes})'] = grupo_quebra[mes]
+                grupo_row[f'% Quebra ({mes})'] = total_percentual[mes] if mes in total_percentual.index else 0
                 grupo_row[f'Pond. Quebra ({mes})'] = total_quebra_pond[mes] if mes in total_quebra_pond.index else 0
                 grupo_row[f'Pond. Venda ({mes})'] = total_venda_pond[mes] if mes in total_venda_pond.index else 0
                 grupo_row[f'Margem Bruta ({mes})'] = total_margem[mes] if mes in total_margem.index else 0
@@ -305,24 +300,40 @@ elif menu == "Análise":
 
             df_consolidated = pd.DataFrame(consolidated_data)
 
-            # Estilizar % Quebra (vermelho se > 81%, verde se <= 81%)
-            def highlight_quebra(val):
-                color = 'red' if val > 81 else 'green'
-                return f'background-color: {color}'
+            # Formatar os dados
+            def formatar_df(df):
+                df_formatado = df.copy()
+                for col in df.columns:
+                    if '% Quebra' in col:
+                        df_formatado[col] = df[col].apply(lambda x: f"{x:.0f}%")
+                    elif 'Margem Bruta' in col:
+                        df_formatado[col] = df[col].apply(lambda x: f"R$ {x:,.2f}".replace('.', 'X').replace(',', '.').replace('X', ','))
+                    elif 'Pond. Quebra' in col or 'Pond. Venda' in col:
+                        df_formatado[col] = df[col].astype(int)
+                return df_formatado
 
-            styled_df = df_consolidated.style.applymap(highlight_quebra, subset=[col for col in df_consolidated.columns if '% Quebra' in col])
+            df_formatado = formatar_df(df_consolidated)
+
+            # Estilizar % Quebra
+            styled_df = df_formatado.style.applymap(
+                lambda val: 'background-color: red' if isinstance(val, str) and '%' in val and int(val.replace('%', '')) > 81 else 'background-color: green',
+                subset=[col for col in df_formatado.columns if '% Quebra' in col]
+            )
+
             st.dataframe(styled_df, use_container_width=True)
 
-            # Exibir métricas totais
+            # Exibir totais
             st.subheader("Totais do Grupo")
             col1, col2, col3 = st.columns(3)
             col1.metric("Total Ponderado Quebra", total_quebra_pond.sum())
             col2.metric("Total Ponderado Venda", total_venda_pond.sum())
-            col3.metric("Total Margem Bruta", f"R$ {total_margem.sum():,.2f}")
+            col3.metric("Total Margem Bruta", f"R$ {total_margem.sum():,.2f}".replace('.', 'X').replace(',', '.').replace('X', ','))
+
         else:
             st.warning("Nenhum dado disponível para o filtro selecionado.")
     else:
         st.warning("Nenhum dado disponível para análise.")
+
 
 elif menu == "Importar Planilha":
     st.header("📥 Importar Planilha de Quebras")
